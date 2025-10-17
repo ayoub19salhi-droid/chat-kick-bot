@@ -10,12 +10,12 @@ from flask import Flask, jsonify
 load_dotenv()
 
 # ====== إعداد المتغيرات من .env / Render environment ======
-CLIENT_ID = os.getenv("CLIENT_ID")            # Optional if you use client_credentials to refresh token
-CLIENT_SECRET = os.getenv("CLIENT_SECRET")
-CHANNEL_ID = os.getenv("CHANNEL_ID")          # معرف القناة الرقمي
-AI_API_KEY = os.getenv("GOOGLE_API_KEY")      # Google AI Studio API key
+CLIENT_ID = os.getenv("01K7QY0JSGSJYM1DY8Z9NPRS85")            # Optional if you use client_credentials to refresh token
+CLIENT_SECRET = os.getenv("4e7dde79c9befe94583eae69029e8d91012e53e59cd4538dd87cad13f7c16ff5")
+CHANNEL_ID = os.getenv("41802318")          # معرف القناة الرقمي
+AI_API_KEY = os.getenv("AIzaSyCSbLWay4_I0Eol9uNezr1qc0T6DICXqTg")      # Google AI Studio API key
 AI_URL = os.getenv("AI_URL", "")              # ضع هنا endpoint توليد النصوص إذا لازم (مثال من AI Studio)
-KICK_API_BASE = os.getenv("KICK_API_BASE", "https://api.kick.com")  # غير إذا اختلف
+KICK_API_BASE = os.getenv("https://kick.com/api/v2")  # غير إذا اختلف
 
 # ====== ضبط السلوك ======
 PERSONAS = [
