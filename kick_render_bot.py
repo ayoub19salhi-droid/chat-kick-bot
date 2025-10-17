@@ -1,30 +1,39 @@
+# kick_multi_ai_session.py
 import os
 import time
 import random
-import threading
 import requests
-from flask import Flask, jsonify
+import threading
+from dotenv import load_dotenv
 
-# ====== إعداد المتغيرات مباشرة ======
-CLIENT_ID = "01K7QY0JSGSJYM1DY8Z9NPRS85"
-CLIENT_SECRET = "4e7dde79c9befe94583eae69029e8d91012e53e59cd4538dd87cad13f7c16ff5"
-CHANNEL_ID = "41802318"  # معرف القناة الرقمي
-AI_API_KEY = "AIzaSyCSbLWay4_I0Eol9uNezr1qc0T6DICXqTg"  # Google AI Studio API key
-AI_URL = ""  # إذا أردت endpoint محدد من Google AI Studio
-KICK_API_BASE = "https://kick.com/api/v2"  # API Base
+load_dotenv()
 
-# ====== ضبط السلوك ======
+# ==== الإعدادات تُقرأ من Environment ====
+CLIENT_ID = os.getenv("CLIENT_ID", "")            # (اختياري، يستخدم لتجديد App token)
+CLIENT_SECRET = os.getenv("CLIENT_SECRET", "")    # (اختياري)
+CHANNEL_ID = os.getenv("CHANNEL_ID", "")          # رقم القناة (مثال: 41802318)
+KICK_API_BASE = os.getenv("KICK_API_BASE", "https://kick.com")
+SESSION_TOKEN = os.getenv("SESSION_TOKEN", "")    # **ضعها بنفسك** في Render/.env
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")  # مفتاح Google AI Studio
+AI_URL = os.getenv("AI_URL", "https://api.aistudio.google.com/v1/generate-text")
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "4"))
+RANDOM_POST_MIN = int(os.getenv("RANDOM_POST_MIN", "8"))
+RANDOM_POST_MAX = int(os.getenv("RANDOM_POST_MAX", "15"))
+USER_COOLDOWN = int(os.getenv("USER_COOLDOWN", "10"))
+MAX_CONTEXT = int(os.getenv("MAX_CONTEXT", "10"))
+
+# ==== الشخصيات ====
 PERSONAS = [
-    {"name": "سندس", "style": "لطيفة وتحفيزية", "emoji": "💖"},
-    {"name": "ليلى", "style": "مرحة", "emoji": "✨"},
-    {"name": "رُبى", "style": "هادئة", "emoji": "🌸"},
-    {"name": "نورا", "style": "تشجيعية", "emoji": "🌟"},
-    {"name": "جُمان", "style": "تحب GG", "emoji": "🔥"},
-    {"name": "عُمر", "style": "مرح", "emoji": "😄"},
-    {"name": "سيف", "style": "حماسي", "emoji": "💪"},
-    {"name": "كريم", "style": "مهذب", "emoji": "👍"},
-    {"name": "رامي", "style": "إيموجي كثير", "emoji": "😂"},
-    {"name": "باسل", "style": "هادئ وكول", "emoji": "😎"}
+    {"id": "sundus", "name": "سندس", "style": "لطيفة وتحفيزية", "emoji": "💖"},
+    {"id": "layla",  "name": "ليلى",  "style": "مرحة",          "emoji": "✨"},
+    {"id": "rouba",  "name": "رُبى",  "style": "هادئة",         "emoji": "🌸"},
+    {"id": "noura",  "name": "نورا",  "style": "تشجيعية",       "emoji": "🌟"},
+    {"id": "juman",  "name": "جُمان", "style": "تحب GG",        "emoji": "🔥"},
+    {"id": "omar",   "name": "عُمر",  "style": "مرح",           "emoji": "😄"},
+    {"id": "saif",   "name": "سيف",   "style": "حماسي",         "emoji": "💪"},
+    {"id": "karim",  "name": "كريم",  "style": "مهذب",          "emoji": "👍"},
+    {"id": "rami",   "name": "رامي",  "style": "إيموجي كثير",   "emoji": "😂"},
+    {"id": "bassel", "name": "باسل",  "style": "هادئ وكول",     "emoji": "😎"},
 ]
 
 SHORT_TEMPLATES = [
@@ -32,146 +41,152 @@ SHORT_TEMPLATES = [
     "GG! {emoji}",
     "عمل رائع! {emoji}",
     "واو، ممتاز {emoji}",
-    "استمر هكذا! {emoji}"
+    "استمر هكذا! {emoji}",
 ]
 
-# ====== حالة التوكن والسياق ======
-bot_token = None
-token_expiry = 0
+# ==== حالة التشغيل ====
+CONTEXT = {}
 LAST_SEEN_MESSAGE_ID = None
-USER_COOLDOWN = {}
+LAST_REPLY_TIME = {}
 
-# ====== إعداد Flask ======
-app = Flask(__name__)
+# ==== دوال مساعدة ====
+def persona_token(persona):
+    env_name = f"{persona['id'].upper()}_TOKEN"
+    return os.getenv(env_name) or None
 
-@app.route("/status")
-def status():
-    return jsonify({
-        "ok": True,
-        "bot_token_set": bool(bot_token),
-        "channel_id": CHANNEL_ID
-    })
-
-# ====== دوال مساعدة ======
-def get_app_access_token():
-    global bot_token, token_expiry
-    url = "https://id.kick.com/oauth/token"
-    data = {
-        "grant_type": "client_credentials",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET
-    }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-    try:
-        r = requests.post(url, data=data, headers=headers, timeout=15)
-        r.raise_for_status()
-        j = r.json()
-        bot_token = j.get("access_token")
-        expires_in = int(j.get("expires_in", 3600))
-        token_expiry = time.time() + expires_in - 60
-        print("حصلنا على BOT_TOKEN بنجاح؛ expires_in:", expires_in)
-        return bot_token
-    except Exception as e:
-        print("فشل الحصول على BOT_TOKEN:", e)
-        return None
-
-def ensure_token():
-    global bot_token
-    if not bot_token or time.time() >= token_expiry:
-        return get_app_access_token()
-    return bot_token
+def headers_for_persona(persona):
+    token = persona_token(persona)
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; KickBot/1.0)"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    elif SESSION_TOKEN:
+        headers["Cookie"] = f"sessionid={SESSION_TOKEN}"
+    headers["Content-Type"] = "application/json"
+    return headers
 
 def send_kick_message(persona, text):
-    if not ensure_token():
-        return
-    url = f"{KICK_API_BASE}/channels/{CHANNEL_ID}/chat/messages"
-    headers = {"Authorization": f"Bearer {bot_token}", "Content-Type": "application/json"}
-    payload = {"message": f"[{persona['name']}] {text}"}
+    if not CHANNEL_ID:
+        print("⚠ CHANNEL_ID غير محدد.")
+        return False
+    post_url = f"{KICK_API_BASE}/api/v2/channels/{CHANNEL_ID}/chat/messages"
+    headers = headers_for_persona(persona)
+    payload = {"content": f"[{persona['name']}] {text}"}
     try:
-        r = requests.post(url, json=payload, headers=headers, timeout=10)
+        r = requests.post(post_url, json=payload, headers=headers, timeout=12)
         if r.status_code >= 400:
-            print("kick postMessage error:", r.status_code, r.text)
-        else:
-            print(f"إرسال بواسطة {persona['name']}: {text}")
+            print(f"kick postMessage error {r.status_code}: {r.text}")
+            return False
+        print(f"✅ إرسال بواسطة {persona['name']}: {text}")
+        return True
     except Exception as e:
-        print("خطأ عند إرسال رسالة إلى Kick:", e)
+        print("❌ خطأ عند إرسال رسالة إلى Kick:", e)
+        return False
 
-def ai_generate_short_reply(persona, user_message, user_id):
-    if not AI_API_KEY:
-        return f"{persona['name']} يقول: {user_message[:30]}... {persona['emoji']}"
-    prompt = (
-        f"أنت الشخصية \"{persona['name']}\" بأسلوب {persona['style']}. "
-        f"تتكلم بالدارجة المغربية أو العربية الفصحى. "
-        f"الرد قصير <=30 كلمة. المستخدم قال: \"{user_message}\""
-    )
-    url = AI_URL or "https://api.aistudio.google.com/v1/generate-text"
-    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
-    body = {"prompt": prompt, "max_output_tokens": 60}
+def get_messages_from_kick():
+    if not CHANNEL_ID:
+        return []
+    get_url = f"{KICK_API_BASE}/api/v2/channels/{CHANNEL_ID}/chat/messages"
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; KickBot/1.0)"}
+    if SESSION_TOKEN:
+        headers["Cookie"] = f"sessionid={SESSION_TOKEN}"
+    else:
+        for p in PERSONAS:
+            t = persona_token(p)
+            if t:
+                headers["Authorization"] = f"Bearer {t}"
+                break
     try:
-        r = requests.post(url, headers=headers, json=body, timeout=15)
+        r = requests.get(get_url, headers=headers, timeout=12)
         r.raise_for_status()
         j = r.json()
-        reply = j.get("output_text") or j.get("text") or j.get("result") or j.get("generated_text")
+        msgs = j.get("messages") or j.get("data") or []
+        out = []
+        for m in msgs:
+            msg_id = m.get("id") or m.get("message_id") or m.get("_id")
+            user_id = m.get("user_id") or m.get("from") or m.get("author_id")
+            text = (m.get("text") or m.get("content") or m.get("message") or "") or ""
+            out.append({"id": msg_id, "user_id": user_id, "text": text})
+        return out
+    except Exception as e:
+        print("Error fetching messages from Kick:", e)
+        return []
+
+# ==== AI ====
+def ai_generate_short_reply(persona, user_message):
+    if not GOOGLE_API_KEY:
+        return random.choice(SHORT_TEMPLATES).format(emoji=persona["emoji"])
+    prompt = (
+        f"أنت الشخصية \"{persona['name']}\" بأسلوب {persona['style']}. "
+        f"تكلم بالدارجة المغربية أو العربية حسب النص. الرد قصير (<30 كلمة). "
+        f"المستخدم قال: \"{user_message}\". أجب بطريقة مشجعة."
+    )
+    headers = {"Authorization": f"Bearer {GOOGLE_API_KEY}", "Content-Type": "application/json"}
+    body = {"prompt": prompt, "max_output_tokens": 60}
+    try:
+        r = requests.post(AI_URL, headers=headers, json=body, timeout=12)
+        r.raise_for_status()
+        j = r.json()
+        reply = j.get("output_text") or j.get("text") or j.get("generated_text") or ""
         if isinstance(reply, list):
             reply = " ".join(reply)
-        if not reply:
-            reply = j.get("choices", [{}])[0].get("text", "")
         reply = reply.strip()
         if len(reply.split()) > 40:
             reply = " ".join(reply.split()[:30]) + "..."
-        return reply
+        return reply or random.choice(SHORT_TEMPLATES).format(emoji=persona["emoji"])
     except Exception as e:
         print("AI generation error:", e)
-        return f"{persona['name']} يقول: {user_message[:30]}... {persona['emoji']}"
+        return random.choice(SHORT_TEMPLATES).format(emoji=persona["emoji"])
 
-USER_RESPONSE_COOLDOWN = 10  # ثواني
-
-def fetch_and_respond():
+# ==== المنطق الرئيسي ====
+def fetch_and_respond_loop():
     global LAST_SEEN_MESSAGE_ID
     while True:
-        try:
-            if not ensure_token():
-                time.sleep(5)
-                continue
-            headers = {"Authorization": f"Bearer {bot_token}"}
-            url = f"{KICK_API_BASE}/channels/{CHANNEL_ID}/chat/messages"
-            r = requests.get(url, headers=headers, timeout=15)
-            r.raise_for_status()
-            data = r.json()
-            messages = data.get("messages") or []
-            for msg in messages:
-                msg_id = msg.get("id")
-                user_id = msg.get("user_id") or msg.get("from")
-                text = (msg.get("text") or msg.get("message") or "").strip()
-                if not text or user_id is None:
+        msgs = get_messages_from_kick()
+        for m in msgs:
+            try:
+                mid = m.get("id")
+                uid = m.get("user_id")
+                text = (m.get("text") or "").strip()
+                if not mid or not text:
                     continue
-                if msg.get("is_bot") or msg.get("from_bot"):
+                if LAST_SEEN_MESSAGE_ID and mid <= LAST_SEEN_MESSAGE_ID:
                     continue
-                if LAST_SEEN_MESSAGE_ID and msg_id <= LAST_SEEN_MESSAGE_ID:
-                    continue
-                last_time = USER_COOLDOWN.get(user_id, 0)
-                if time.time() - last_time < USER_RESPONSE_COOLDOWN:
+                last = LAST_REPLY_TIME.get(uid, 0)
+                if time.time() - last < USER_COOLDOWN:
                     continue
                 persona = random.choice(PERSONAS)
-                reply = ai_generate_short_reply(persona, text, user_id)
-                send_kick_message(persona, reply)
-                USER_COOLDOWN[user_id] = time.time()
-                LAST_SEEN_MESSAGE_ID = msg_id
-        except Exception as e:
-            print("Error in fetch_and_respond:", e)
-        time.sleep(4)
+                reply = ai_generate_short_reply(persona, text)
+                ok = send_kick_message(persona, reply)
+                if ok:
+                    LAST_REPLY_TIME[uid] = time.time()
+                    LAST_SEEN_MESSAGE_ID = mid
+            except Exception as e:
+                print("Error processing message:", e)
+        time.sleep(POLL_INTERVAL)
 
-def random_poster():
+def random_poster_loop():
+    time.sleep(3)
     while True:
         persona = random.choice(PERSONAS)
         text = random.choice(SHORT_TEMPLATES).format(emoji=persona["emoji"])
         send_kick_message(persona, text)
-        time.sleep(random.randint(8, 15))
+        time.sleep(random.randint(RANDOM_POST_MIN, RANDOM_POST_MAX))
+
+def start_bot_threads():
+    t1 = threading.Thread(target=random_poster_loop, daemon=True)
+    t2 = threading.Thread(target=fetch_and_respond_loop, daemon=True)
+    t1.start(); t2.start()
+    print("🚀 البوت بدأ: نشر عشوائي واستماع للرسائل")
 
 if __name__ == "__main__":
-    get_app_access_token()
-    t1 = threading.Thread(target=random_poster, daemon=True)
-    t2 = threading.Thread(target=fetch_and_respond, daemon=True)
-    t1.start()
-    t2.start()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))
+    print("Starting Kick Multi-Persona AI Bot")
+    if not CHANNEL_ID:
+        print("⚠ CHANNEL_ID غير معبأ في البيئة. أضف CHANNEL_ID ثم أعد التشغيل.")
+        exit(1)
+    if not (SESSION_TOKEN or any(os.getenv(f"{p['id'].upper()}_TOKEN") for p in PERSONAS)):
+        print("⚠ تحذير: لا SESSION_TOKEN عام ولا توكنات شخصية محددة. ضع SESSION_TOKEN أو توكن لكل شخصية.")
+    test_persona = PERSONAS[0]
+    send_kick_message(test_persona, "✅ اختبار: البوت متصل الآن (رسالة اختبار)")
+    start_bot_threads()
+    while True:
+        time.sleep(60)
